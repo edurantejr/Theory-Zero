@@ -1,107 +1,109 @@
-# sim/run_phase3.py
 """
-Phase-3 Black-Hole Simulator driver
-----------------------------------
-• If --wij <file> is given, converts Phase-2 weight matrix w_ij → S(x)
-  and splashes each node on a 3-D lattice at a **random location**
-  (4-voxel margin).  Otherwise uses a single-dent demo.
-• Evolves metric + particles and writes phase3_traj.npz
-"""
+Phase-3 curvature-driven particle simulation
+===========================================
 
+Run on CPU:
+
+    python -m sim.run_phase3 --nodes 5000 --frames 250
+
+Run on GPU (CuPy):
+
+    python -m sim.run_phase3 --gpu --nodes 5000 --frames 250
+"""
 from __future__ import annotations
-import argparse, time, sim.backend as np
-from pathlib import Path
+import argparse, time, math
 
-from sim.integrators   import step
-from sim.io            import save_npz
-from sim.entropy_field import load_wij, node_entropy, splash_to_lattice
+# dynamic backend ─────────────────────────────────────────────────────────────
+import sim.backend as xp            # NumPy *or* CuPy, selected by --gpu
+import numpy as np                  # always plain NumPy (for Numba kernels)
 
+from sim.entropy_field import (
+    load_wij,          # phase-2 weights  (optional)
+    node_entropy,      # S(i) from wij
+    splash_to_lattice, # scatter S onto 3-D lattice
+)
 
-# ── helper ──────────────────────────────────────────────────────
-def build_entropy_field(L: int, wij_path: Path | None) -> np.ndarray:
-    """
-    Returns S(x) on an L×L×L lattice.
-    Randomly scatters nodes with a 4-cell safety margin.
-    """
-    if wij_path and wij_path.exists():
-        print(f"• loading Phase-2 weights from {wij_path}")
-        wij    = load_wij(str(wij_path))
-        S_node = node_entropy(wij)
-        S_node += 0.05 * np.random.rand(*S_node.shape).astype(np.float32)
-        print(f"  node-entropy min/max  {S_node.min():.4f}  {S_node.max():.4f}")
-
-        # normalise 0–1
-        S_node -= S_node.min()
-        if S_node.max() > 0:
-            S_node /= S_node.max()
-
-        # ---------------------------------------------------------------
-        #  Randomly scatter each Phase-2 node, then push half of them
-        #  to the left and half to the right so the field is asymmetric.
-        # ---------------------------------------------------------------
-
-        margin = 4                                  # keep bumps away from lattice edge
-        coords = np.random.uniform(margin, L - margin,
-                                    (wij.shape[0], 3)).astype(np.float32)
-
-        # Hard split: move first half left, second half right
-        half   = coords.shape[0] // 2
-        shift  = min(10, (L // 2) - margin)          # never leave the lattice
-        coords[:half, 0]  -= shift                   # x – shift  (left cluster)
-        coords[half:, 0] += shift                    # x + shift  (right cluster)
-
-        # Optional: make the right cluster stronger
-        S_node[half:] *= 2.0                         # double entropy for right cluster
+from sim.physics      import evolve_metric
+from sim.integrators  import step        # Numba CPU kernels
 
 
-        S = splash_to_lattice(S_node, coords, (L, L, L), sigma=1.0)
-        print(f"  lattice S range       {S.min():.4f}  {S.max():.4f}")
-
-        if np.isclose(S.max() - S.min(), 0.0):
-            print("  ⚠ flat entropy field → reverting to single dent")
-            S.fill(0.0)
-            S[L // 2, L // 2, L // 2] = 1.0
-    else:
-        print("• no weights provided → single-dent demo")
-        S = np.zeros((L, L, L), np.float32)
-        S[L // 2, L // 2, L // 2] = 1.0
-
-    return S
+def parse_args() -> argparse.Namespace:
+    ap  = argparse.ArgumentParser()
+    ap.add_argument("--gpu", action="store_true",
+                    help="use CuPy backend if available")
+    ap.add_argument("--nodes",  type=int, default=5000)
+    ap.add_argument("--frames", type=int, default=250)
+    ap.add_argument("--wij",    type=str, help="phase-2 weight matrix .npy")
+    ap.add_argument("--out",    type=str, default="phase3_traj.npz")
+    return ap.parse_args()
 
 
-# ── CLI and main loop ───────────────────────────────────────────
-def positive_int(x: str) -> int: return max(1, int(x))
-
-
+# ─────────────────────────────────────────────────────────────────────────────
 def main() -> None:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--nodes",  type=positive_int, default=5000)
-    ap.add_argument("--frames", type=positive_int, default=250)
-    ap.add_argument("--fps",    type=positive_int, default=20)
-    ap.add_argument("--out",    default="phase3_traj.npz")
-    ap.add_argument("--wij",    type=Path, default=None, help=".npy / .csv weight matrix")
-    args = ap.parse_args()
+    args   = parse_args()
+    N      = args.nodes
+    F      = args.frames
+    fps    = 20
+    dt     = 1.0 / fps
+    dx     = 1.0            # lattice spacing
+    L      = 64             # lattice side (adjust as you like)
 
-    dt, dx = 1.0 / args.fps, 1.0
-    L      = int(round(args.nodes ** (1 / 3)))
+    print(f"▶ Phase-3 sim  N={N:,}  frames={F}  fps={fps}")
 
-    S = build_entropy_field(L, args.wij)
-    g = np.zeros((L - 2, L - 2, L - 2), np.float32)     # metric interior
-    state = dict(S=S, g=g)
+    # ------------------------------------------------------------------ entropy
+    if args.wij:
+        print(f"• loading Phase-2 weights from {args.wij}")
+        wij = load_wij(args.wij)           # → backend array
+        S_nodes = node_entropy(wij)        # shape (N,)
+    else:
+        # no weights → simple demo: single entropy 'dent'
+        S_nodes = xp.ones(N, dtype=xp.float32)
 
-    particles = np.zeros((args.nodes, 6), np.float32)   # [x y z vx vy vz]
-    particles[:, 0:3] = np.random.uniform(-0.4, 0.4, (args.nodes, 3))
+    # random particle positions in a cube of side L-4 centred at origin
+    rng = xp.random.default_rng(0)
+    pos = rng.uniform(-(L - 4) / 2, +(L - 4) / 2, size=(N, 3)).astype(xp.float32)
 
-    traj = np.empty((args.frames, args.nodes, 3), np.float32)
+    # ---------------------------------------------------------------- lattice S
+    S_lattice = splash_to_lattice(S_nodes, pos, L, sigma=1.0, xp=xp)
 
-    print(f"▶ Phase-3 sim  N={args.nodes:,}  frames={args.frames}  fps={args.fps}")
+    # metric tensor g00 on (L-2)³ interior grid
+    g   = xp.zeros((L - 2, L - 2, L - 2), dtype=xp.float32)
+
+    # particles: (x, y, z, vx, vy, vz)
+    particles = xp.zeros((N, 6), dtype=xp.float32)
+    particles[:, 0:3] = pos
+    # give them an outward radial kick
+    r = xp.linalg.norm(pos, axis=1, keepdims=True) + 1e-6
+    particles[:, 3:6] =  0.1 * pos / r
+
+    # ----------------------------------------------------------------- simulate
     t0 = time.time()
-    for f in range(args.frames):
-        traj[f] = particles[:, 0:3]
-        step(state, particles, dt, dx)
+    for frame in range(F):
+        # 1. update metric on GPU / CPU backend
+        g = evolve_metric(g, S_lattice, dt, dx)
+
+        # 2. Numba integrator needs **NumPy** arrays
+        if xp is not np:                         # CuPy in use
+            particles_np = xp.asnumpy(particles)
+            g00_np       = xp.asnumpy(g)
+        else:
+            particles_np = particles
+            g00_np       = g
+
+        # kick + drift (CPU)
+        step({"g": g00_np}, particles_np, dt, dx)
+
+        # 3. copy back to GPU if necessary
+        if xp is not np:
+            particles = xp.asarray(particles_np)
+
     print(f"⏱  completed in {time.time() - t0:.1f}s")
 
-    save_npz(traj, args.fps, args.out)
+    # ----------------------------------------------------------------- save traj
+    np.savez_compressed(args.out,
+                        particles=xp.asnumpy(particles),
+                        g00=xp.asnumpy(g))
+    print(f"✅  wrote {args.out}")
 
 
 if __name__ == "__main__":
