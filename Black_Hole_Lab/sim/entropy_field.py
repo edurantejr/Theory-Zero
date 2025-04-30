@@ -4,7 +4,7 @@ import sim.backend as np   # or 'xp' if you prefer the alias
 def load_wij(path: str) -> np.ndarray:
     """Load Phase-2 weight matrix (.npy, .csv, .txt)."""
     if path.endswith(".npy"):
-        return np.load(path)
+        return np.asarray(np.load(path))
     return np.loadtxt(path, delimiter=",")
 
 def node_entropy(wij: np.ndarray) -> np.ndarray:
