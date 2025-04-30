@@ -9,7 +9,7 @@ Phase-3 Black-Hole Simulator driver
 """
 
 from __future__ import annotations
-import argparse, time, numpy as np
+import argparse, time, sim.backend as np
 from pathlib import Path
 
 from sim.integrators   import step
