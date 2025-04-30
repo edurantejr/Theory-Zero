@@ -2,7 +2,7 @@
 import numpy as np
 import cupy  as cp
 from sim.backend import xp                     # NumPy ↔ CuPy switch
-from sim.physics import force_phase3
+from sim.physics import evolve_metric, force_phase3
 
 # --------------------------------------------------------------------------
 @xp.fuse()                                    # fused kernel for CuPy
