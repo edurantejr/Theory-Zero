@@ -1,74 +1,106 @@
-import sim.backend as np   # or 'xp' if you prefer the alias
+"""
+Metric evolution and forces (Phase-3).
+Works on either NumPy (CPU) or CuPy (GPU).
+"""
+from __future__ import annotations
+import math
+import numba as nb
+import sim.backend as xp      # NumPy or CuPy
+import numpy as np            # always NumPy for Numba kernels
 
-# ───────────────────────── Ricci tensor ───────────────────────
-def ricci_tensor(S: np.ndarray,
-                 dx: float = 1.0,
-                 *,               # force keyword args from here
-                 h: float | None = None,      # legacy alias
-                 kappa: float = -0.138475,
-                 gamma: float = -1.0):
-    """
-    Returns (R00, Rii) on the (L-2)³ interior grid.
-
-    Phase-2 core relation
-        Rμν = κ ( ∇μ∇ν S − γ gμν ∇²S ),   g00 = −1.
-    The static tables used dx = 0.9.
-    """
-    if h is not None:
-        dx = h
-
-    # 6-point Laplacian and second derivatives
-    lap = (
-          S[ :-2,1:-1,1:-1] + S[2:,1:-1,1:-1]
-        + S[1:-1, :-2,1:-1] + S[1:-1,2:,1:-1]
-        + S[1:-1,1:-1, :-2] + S[1:-1,1:-1,2:]
-        - 6.0 * S[1:-1,1:-1,1:-1]
-    ) / dx**2
-
-    dxx = (S[2:,1:-1,1:-1]  - 2*S[1:-1,1:-1,1:-1] + S[ :-2,1:-1,1:-1]) / dx**2
-    dyy = (S[1:-1,2:,1:-1]  - 2*S[1:-1,1:-1,1:-1] + S[1:-1, :-2,1:-1]) / dx**2
-    dzz = (S[1:-1,1:-1,2:]  - 2*S[1:-1,1:-1,1:-1] + S[1:-1,1:-1, :-2]) / dx**2
-
-    R00 = kappa * lap                            # g00 = −1, γ = −1
-    Rii = -kappa * (dxx + dyy + dzz) / 3.0       # isotropic spatial diag
-    return R00, Rii
-
-# ───────────────────────── stability helper ──────────────────────
-def safe_step(g00: np.ndarray,
+# ─────────────────────────────────────────────────────────────────────────────
+@nb.njit(cache=True, fastmath=True)
+def safe_step(g: np.ndarray,
               R00: np.ndarray,
-              dt:  float,
-              dx:  float,
-              safety: float = 0.4):
+              dt: float,
+              dx: float,
+              damping: float = 0.1) -> np.ndarray:
     """
-    CFL-style guard: limit dt so   |Δg00| ≤ safety · dx²
-
-    If the proposed dt would change any g00 value by more than
-    safety·dx², we scale dt down before applying the update.
+    Semi-implicit forward-Euler with a simple stability limit.
     """
     max_delta = np.abs(R00).max() * dt
-    limit     = safety * dx * dx
-    if max_delta > limit and max_delta != 0.0:
-        dt *= limit / max_delta     # shrink dt
-    return g00 - dt * R00, dt       # return (new_g00, actual_dt)
+    if max_delta > 0.4:           # clip large steps
+        dt_eff = 0.4 / np.abs(R00).max()
+    else:
+        dt_eff = dt
 
-# ───────────────────────── metric update ──────────────────────
-def evolve_metric(g: np.ndarray,
-                  S: np.ndarray,
+    g_new = g + dt_eff * (R00 - damping * g)
+    return g_new
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+def ricci_tensor(S: xp.ndarray,
+                 dx: float = 1.0,
+                 kappa: float = -0.138475,
+                 gamma: float = -1.0) -> tuple[xp.ndarray, xp.ndarray]:
+    """
+    Returns (R00, Rii) on the interior grid (shape (L-2)³).
+    """
+    lap = (
+        S[:-2, 1:-1, 1:-1] + S[2:, 1:-1, 1:-1] +
+        S[1:-1, :-2, 1:-1] + S[1:-1, 2:, 1:-1] +
+        S[1:-1, 1:-1, :-2] + S[1:-1, 1:-1, 2:] -
+        6.0 * S[1:-1, 1:-1, 1:-1]
+    ) / dx**2
+
+    dxx = (S[2:, 1:-1, 1:-1] - 2*S[1:-1, 1:-1, 1:-1] + S[:-2, 1:-1, 1:-1]) / dx**2
+    dyy = (S[1:-1, 2:, 1:-1] - 2*S[1:-1, 1:-1, 1:-1] + S[1:-1, :-2, 1:-1]) / dx**2
+    dzz = (S[1:-1, 1:-1, 2:] - 2*S[1:-1, 1:-1, 1:-1] + S[1:-1, 1:-1, :-2]) / dx**2
+
+    R00 = kappa * (dxx + dyy + dzz + gamma * lap)
+    Rii = kappa * (-dxx - dyy + (1 + gamma) * lap)   # spatial trace
+    return R00, Rii
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+def evolve_metric(g: xp.ndarray,
+                  S: xp.ndarray,
                   dt: float,
                   dx: float,
                   *,
                   kappa: float = -0.138475,
                   gamma: float = -1.0,
-                  damping: float = 0.1) -> np.ndarray:
+                  damping: float = 0.1) -> xp.ndarray:
+    """
+    Single forward-Euler step for g00 using the Ricci tensor.
+    Handles NumPy (CPU) and CuPy (GPU) transparently.
+    """
+    on_gpu = xp is not np
 
-    R00, _ = ricci_tensor(S, dx=dx, kappa=kappa, gamma=gamma)
-    g_new, dt_eff = safe_step(g, R00, dt, dx)        # stability guard
-    return (1.0 - damping) * g_new                  # optional damping
+    # make sure NumPy views for Numba kernels
+    if on_gpu:
+        S_np = S.get()
+        g_np = g.get()
+    else:
+        S_np = S
+        g_np = g
 
-# ───────────────────────── Phase-3 particle force ─────────────
-def force_phase3(g00: np.ndarray, dx: float = 1.0):
-    """F = −½ ∇g00  on the interior lattice."""
-    Fx = -(g00[2:,1:-1,1:-1] - g00[:-2,1:-1,1:-1]) / (2*dx) * 0.5
-    Fy = -(g00[1:-1,2:,1:-1] - g00[1:-1,:-2,1:-1]) / (2*dx) * 0.5
-    Fz = -(g00[1:-1,1:-1,2:] - g00[1:-1,1:-1,:-2]) / (2*dx) * 0.5
-    return Fx, Fy, Fz
+    R00_np, _ = ricci_tensor(S_np, dx, kappa=kappa, gamma=gamma)
+    g_new_np  = safe_step(g_np, R00_np, dt, dx, damping)
+
+    # send back to GPU if necessary
+    if on_gpu:
+        return xp.asarray(g_new_np)
+    else:
+        return g_new_np
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+def force_phase3(g00: xp.ndarray,
+                 pos: xp.ndarray,
+                 dx: float = 1.0,
+                 kappa: float = -0.138475,
+                 gamma: float = -1.0) -> xp.ndarray:
+    """
+    Simple force: F = −∇g00  (gradient on the staggered grid)
+    """
+    # trilinear index
+    i = xp.clip(((pos[:, 0] + (g00.shape[0] // 2)) / dx).astype(int), 1, g00.shape[0]-2)
+    j = xp.clip(((pos[:, 1] + (g00.shape[1] // 2)) / dx).astype(int), 1, g00.shape[1]-2)
+    k = xp.clip(((pos[:, 2] + (g00.shape[2] // 2)) / dx).astype(int), 1, g00.shape[2]-2)
+
+    gx = (g00[i+1, j, k] - g00[i-1, j, k]) / (2*dx)
+    gy = (g00[i, j+1, k] - g00[i, j-1, k]) / (2*dx)
+    gz = (g00[i, j, k+1] - g00[i, j, k-1]) / (2*dx)
+
+    return -xp.stack((gx, gy, gz), axis=1)
