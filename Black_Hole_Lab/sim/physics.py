@@ -62,27 +62,23 @@ def evolve_metric(g: xp.ndarray,
                   gamma: float = -1.0,
                   damping: float = 0.1) -> xp.ndarray:
     """
-    Single forward-Euler step for g00 using the Ricci tensor.
-    Handles NumPy (CPU) and CuPy (GPU) transparently.
+    Forward-Euler update for g00 that works on either NumPy (CPU)
+    or CuPy (GPU) tensors.
     """
-    on_gpu = xp is not np
+    # ─── detect backend from the *data* instead of xp alone ──────────
+    on_gpu = hasattr(S, "get") and hasattr(g, "get")
 
-    # make sure NumPy views for Numba kernels
-    if on_gpu:
-        S_np = S.get()
-        g_np = g.get()
-    else:
-        S_np = S
-        g_np = g
+    # convert to plain NumPy for the Numba kernels
+    S_np = S.get() if on_gpu else S
+    g_np = g.get() if on_gpu else g
 
+    # curvature + stable step (Numba)
     R00_np, _ = ricci_tensor(S_np, dx, kappa=kappa, gamma=gamma)
     g_new_np  = safe_step(g_np, R00_np, dt, dx, damping)
 
     # send back to GPU if necessary
-    if on_gpu:
-        return xp.asarray(g_new_np)
-    else:
-        return g_new_np
+    return xp.asarray(g_new_np) if on_gpu else g_new_np
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
