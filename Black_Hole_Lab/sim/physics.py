@@ -81,22 +81,25 @@ def evolve_metric(g: xp.ndarray,
 
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-def force_phase3(g00: xp.ndarray,
-                 pos: xp.ndarray,
-                 dx: float = 1.0,
-                 kappa: float = -0.138475,
-                 gamma: float = -1.0) -> xp.ndarray:
+# ── sim/physics.py ─────────────────────────────────────────────────────────
+def force_phase3(g00: xp.ndarray | float,
+                 pos: xp.ndarray,          # [x,y,z] in lattice coords
+                 dx : float = 1.0) -> tuple[float, float, float]:
     """
-    Simple force: F = −∇g00  (gradient on the staggered grid)
+    ∇g00   (central-difference)   →   F = −∇g00
+    Works for both NumPy (CPU) and CuPy (GPU).
+    If g00 is a scalar just return zero force.
     """
-    # trilinear index
-    i = xp.clip(((pos[:, 0] + (g00.shape[0] // 2)) / dx).astype(int), 1, g00.shape[0]-2)
-    j = xp.clip(((pos[:, 1] + (g00.shape[1] // 2)) / dx).astype(int), 1, g00.shape[1]-2)
-    k = xp.clip(((pos[:, 2] + (g00.shape[2] // 2)) / dx).astype(int), 1, g00.shape[2]-2)
+    if xp.isscalar(g00):                       # nothing to differentiate
+        return 0.0, 0.0, 0.0
 
-    gx = (g00[i+1, j, k] - g00[i-1, j, k]) / (2*dx)
-    gy = (g00[i, j+1, k] - g00[i, j-1, k]) / (2*dx)
-    gz = (g00[i, j, k+1] - g00[i, j, k-1]) / (2*dx)
+    # clip & convert to int indices
+    i = xp.clip((pos[0] / dx).astype(int), 1, g00.shape[0] - 2)
+    j = xp.clip((pos[1] / dx).astype(int), 1, g00.shape[1] - 2)
+    k = xp.clip((pos[2] / dx).astype(int), 1, g00.shape[2] - 2)
 
-    return -xp.stack((gx, gy, gz), axis=1)
+    ddx = (g00[i+1, j, k] - g00[i-1, j, k]) / (2*dx)
+    ddy = (g00[i, j+1, k] - g00[i, j-1, k]) / (2*dx)
+    ddz = (g00[i, j, k+1] - g00[i, j, k-1]) / (2*dx)
+
+    return (-ddx, -ddy, -ddz)
