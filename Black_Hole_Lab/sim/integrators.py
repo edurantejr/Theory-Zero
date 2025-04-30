@@ -31,7 +31,6 @@ def kick_particles(p: xp.ndarray, g00: xp.ndarray,
         # write back
         p[n] = (x, y, z, vx, vy, vz)
 
-
 # ------------------------------------------------------------------
 def step(state: dict[str, np.ndarray],
          particles: np.ndarray,
