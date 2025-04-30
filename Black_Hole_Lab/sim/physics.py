@@ -81,25 +81,34 @@ def evolve_metric(g: xp.ndarray,
 
 
 
-# ── sim/physics.py ─────────────────────────────────────────────────────────
+# ── sim/physics.py ──────────────────────────────────────────────────────────
 def force_phase3(g00: xp.ndarray | float,
                  pos: xp.ndarray,          # [x,y,z] in lattice coords
                  dx : float = 1.0) -> tuple[float, float, float]:
     """
-    ∇g00   (central-difference)   →   F = −∇g00
-    Works for both NumPy (CPU) and CuPy (GPU).
-    If g00 is a scalar just return zero force.
+    Central-difference force  F = −∇g00 .
+    Works for NumPy (CPU) *and* CuPy (GPU).
+    If g00 is a scalar (happens when metric not yet initialised)
+    return a zero-vector so the integrator keeps going.
     """
-    if xp.isscalar(g00):                       # nothing to differentiate
+    # ------------------------------------------------------------------
+    # short-circuit: nothing to differentiate yet
+    # ------------------------------------------------------------------
+    if xp.isscalar(g00):
         return 0.0, 0.0, 0.0
 
-    # clip & convert to int indices
-    i = xp.clip((pos[0] / dx).astype(int), 1, g00.shape[0] - 2)
-    j = xp.clip((pos[1] / dx).astype(int), 1, g00.shape[1] - 2)
-    k = xp.clip((pos[2] / dx).astype(int), 1, g00.shape[2] - 2)
+    # guaranteed array from here on
+    Lx, Ly, Lz = g00.shape
 
-    ddx = (g00[i+1, j, k] - g00[i-1, j, k]) / (2*dx)
-    ddy = (g00[i, j+1, k] - g00[i, j-1, k]) / (2*dx)
-    ddz = (g00[i, j, k+1] - g00[i, j, k-1]) / (2*dx)
+    # lattice indices (clip to interior so we can look ±1)
+    i = xp.clip((pos[0] / dx).astype(int), 1, Lx - 2)
+    j = xp.clip((pos[1] / dx).astype(int), 1, Ly - 2)
+    k = xp.clip((pos[2] / dx).astype(int), 1, Lz - 2)
 
-    return (-ddx, -ddy, -ddz)
+    # central differences
+    ddx = (g00[i+1, j,   k] - g00[i-1, j,   k]) / (2*dx)
+    ddy = (g00[i,   j+1, k] - g00[i,   j-1, k]) / (2*dx)
+    ddz = (g00[i,   j,   k+1] - g00[i,   j,   k-1]) / (2*dx)
+
+    # minus sign gives the “force”
+    return (-float(ddx), -float(ddy), -float(ddz))
