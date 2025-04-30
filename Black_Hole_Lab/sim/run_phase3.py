@@ -86,12 +86,14 @@ def main() -> None:
         if xp is not np:                         # CuPy in use
             particles_np = xp.asnumpy(particles)
             g00_np       = xp.asnumpy(g)
+            S_np        = xp.asnumpy(S_lattice)
         else:
             particles_np = particles
             g00_np       = g
+            S_np        = S_lattice
 
         # kick + drift (CPU)
-        step({"g": g00_np}, particles_np, dt, dx)
+        step({"S": S_np, "g": g00_np}, particles_np, dt, dx)
 
         # 3. copy back to GPU if necessary
         if xp is not np:
