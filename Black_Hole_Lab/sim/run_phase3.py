@@ -1,43 +1,49 @@
-# sim/run_phase3.py
-
 import argparse
-import numpy as _np
-from .backend import xp, as_backend, asnumpy
-from .integrators import step
+import time
+import numpy as np
+from backend import Backend
+from physics import Physics
+from integrators import Integrator
 
 def main():
-    p = argparse.ArgumentParser(prog="Phase-3 sim")
-    p.add_argument("--gpu",    action="store_true", help="use Cupy if available")
-    p.add_argument("--nodes",  type=int,   default=1000)
-    p.add_argument("--frames", type=int,   default=250)
-    p.add_argument("--dt",     type=float, default=0.05)
-    p.add_argument("--dx",     type=float, default=1.0)
-    args = p.parse_args()
+    parser = argparse.ArgumentParser(description="Phase 3 Simulation")
+    parser.add_argument("--gpu", action="store_true", help="Use GPU if available")
+    parser.add_argument("--nodes", type=int, default=1000, help="Number of particles")
+    parser.add_argument("--frames", type=int, default=50, help="Number of frames")
+    parser.add_argument("--dt", type=float, default=0.01, help="Time step")
+    parser.add_argument("--dx", type=float, default=0.01, help="Spatial resolution")
+    args = parser.parse_args()
 
-    # build S & g on xp
-    S = as_backend(
-        xp.random.random(
-            (args.nodes, args.nodes, args.nodes),
-            dtype = xp.float32
-        )
-    )
-    g = xp.zeros((args.nodes - 2,)*3, dtype=xp.float32)
+    backend = Backend(use_gpu=args.gpu)
+    xp = backend.xp
 
-    # initialise M = nodes test particles
-    particles = xp.zeros((args.nodes, 6), dtype=xp.float32)
-    # example: line of particles along x, centered
-    particles[:,0] = xp.linspace(-args.nodes/2, args.nodes/2, args.nodes)
+    # Initialize particles
+    positions = xp.random.uniform(0, 1, (args.nodes, 2))
+    velocities = xp.random.uniform(-0.1, 0.1, (args.nodes, 2))
 
-    state = {"S": S, "g": g}
+    physics = Physics(backend, sigma=0.1, kappa=-0.01)
+    integrator = Integrator(backend, physics, dt=args.dt)
 
-    # run
-    for _ in range(args.frames):
-        particles = step(state, particles, args.dt, args.dx)
+    # Run simulation
+    trajectories = [backend.to_numpy(positions)]
+    start_time = time.time()
 
-    # save final trajectory
-    traj = asnumpy(particles)
-    _np.savez("phase3_traj.npz", traj=traj)
-    print("Done → phase3_traj.npz")
+    for frame in range(args.frames):
+        positions, velocities = integrator.step(positions, velocities)
+        trajectories.append(backend.to_numpy(positions))
+
+    end_time = time.time()
+    duration = end_time - start_time
+    nodes_per_sec = (args.nodes * args.frames) / duration
+
+    # Save trajectories
+    trajectories = np.stack(trajectories, axis=0)
+    np.savez("phase3_traj.npz", trajectories=trajectories)
+
+    # Performance report
+    print(f"Simulation completed in {duration:.2f} seconds")
+    print(f"Nodes per second: {nodes_per_sec:.2f}")
+    print(f"Memory usage: {trajectories.nbytes / 1024**2:.2f} MB")
 
 if __name__ == "__main__":
     main()
