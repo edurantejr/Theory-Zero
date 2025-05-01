@@ -13,63 +13,83 @@ from .backend import xp, as_backend
 # -----------------------------------------------------------------------------
 
 
-def ricci_tensor(S: np.ndarray | xp.ndarray,
-                 dx: float = 1.0,
-                 kappa: float = -0.138475,
-                 gamma: float = -1.0):
+def ricci_tensor(
+    S: np.ndarray | xp.ndarray,
+    dx: float = 1.0,
+    h:  float | None = None,      # legacy tests pass `h=` instead of `dx=`
+    kappa: float = -0.138475,
+    gamma: float = -1.0,
+) -> tuple[xp.ndarray, xp.ndarray]:
     """
-    Returns (R00, Rii) evaluated on the interior (shape = (L-2)³).
+    Returns (R00, Rii) on the interior grid (shape = (L-2, L-2, L-2)).
 
     Notes
     -----
     • Accepts either NumPy or CuPy arrays (auto-converted to backend).  
     • We use a 6-point finite-difference Laplacian.
+
+    Legacy support: if `h` is provided, we treat it as `dx`.
     """
+    # legacy alias for the lattice spacing
+    if h is not None:
+        dx = h
+
+    # move S to the right backend (numpy or cupy)
     S = as_backend(S)
     inv_dx2 = 1.0 / dx**2
 
+    # 6-point Laplacian
     lap = (
-        S[:-2, 1:-1, 1:-1] + S[2:, 1:-1, 1:-1] +
-        S[1:-1, :-2, 1:-1] + S[1:-1, 2:, 1:-1] +
-        S[1:-1, 1:-1, :-2] + S[1:-1, 1:-1, 2:]
-        - 6.0 * S[1:-1, 1:-1, 1:-1]
+        S[:-2,1:-1,1:-1] + S[2:,1:-1,1:-1] +
+        S[1:-1,:-2,1:-1] + S[1:-1,2:,1:-1] +
+        S[1:-1,1:-1,:-2] + S[1:-1,1:-1,2:] -
+        6.0 * S[1:-1,1:-1,1:-1]
     ) * inv_dx2
 
-    dxx = (S[2:, 1:-1, 1:-1] - 2*S[1:-1, 1:-1, 1:-1] + S[:-2, 1:-1, 1:-1]) * inv_dx2
-    dyy = (S[1:-1, 2:, 1:-1] - 2*S[1:-1, 1:-1, 1:-1] + S[1:-1, :-2, 1:-1]) * inv_dx2
-    dzz = (S[1:-1, 1:-1, 2:] - 2*S[1:-1, 1:-1, 1:-1] + S[1:-1, 1:-1, :-2]) * inv_dx2
+    # second derivatives
+    dxx = (S[2:,1:-1,1:-1]  - 2*S[1:-1,1:-1,1:-1] + S[:-2,1:-1,1:-1]) * inv_dx2
+    dyy = (S[1:-1,2:,1:-1]  - 2*S[1:-1,1:-1,1:-1] + S[1:-1,:-2,1:-1]) * inv_dx2
+    dzz = (S[1:-1,1:-1,2:]  - 2*S[1:-1,1:-1,1:-1] + S[1:-1,1:-1,:-2]) * inv_dx2
 
+    # R00 and trace(Rij)
     R00 = kappa * (dxx + dyy + dzz + gamma * lap)
     Rii = kappa * ((gamma - 1.0) * xp.stack([dxx, dyy, dzz])).sum(axis=0)
+
     return R00, Rii
 
 
-def force_phase3(g00: np.ndarray | xp.ndarray, dx: float):
+def force_phase3(
+    g00: np.ndarray | xp.ndarray,
+    dx:  float,
+) -> tuple[xp.ndarray, xp.ndarray, xp.ndarray]:
     """
     3-vector ∂R00/∂x.  Result has same shape as *g00*.
 
     Works on both CPU and GPU arrays thanks to ``as_backend``.
     """
     g00 = as_backend(g00)
-    Fx = (xp.zeros_like(g00))
-    Fy = Fx.copy()
-    Fz = Fx.copy()
 
     inv_2dx = 1.0 / (2.0 * dx)
+    Fx = xp.zeros_like(g00)
+    Fy = xp.zeros_like(g00)
+    Fz = xp.zeros_like(g00)
 
-    Fx[1:-1, :, :] = (g00[2:, :, :] - g00[:-2, :, :]) * inv_2dx
-    Fy[:, 1:-1, :] = (g00[:, 2:, :] - g00[:, :-2, :]) * inv_2dx
-    Fz[:, :, 1:-1] = (g00[:, :, 2:] - g00[:, :, :-2]) * inv_2dx
+    Fx[1:-1, :, :] = (g00[2:  , :, :] - g00[:-2, :, :]) * inv_2dx
+    Fy[:, 1:-1, :] = (g00[:, 2:  , :] - g00[:, :-2, :]) * inv_2dx
+    Fz[:, :, 1:-1] = (g00[:, :, 2:  ] - g00[:, :, :-2]) * inv_2dx
+
     return Fx, Fy, Fz
 
 
-def evolve_metric(g00: np.ndarray | xp.ndarray,
-                  S:  np.ndarray | xp.ndarray,
-                  dt: float,
-                  dx: float,
-                  kappa: float = -0.138475,
-                  gamma: float = -1.0,
-                  damping: float = 0.1):
+def evolve_metric(
+    g00: np.ndarray | xp.ndarray,
+    S:   np.ndarray | xp.ndarray,
+    dt:  float,
+    dx:  float,
+    kappa:  float = -0.138475,
+    gamma:  float = -1.0,
+    damping: float = 0.1,
+) -> xp.ndarray:
     """
     Explicit Euler:
 
@@ -77,7 +97,9 @@ def evolve_metric(g00: np.ndarray | xp.ndarray,
 
     Returns the new lattice (same backend as input).
     """
+    # ensure both S and g00 live on the same backend
     g = as_backend(g00)
-    R00, _ = ricci_tensor(S, dx, kappa, gamma)
-    g_new = g + dt * (R00 - damping * g)
-    return g_new
+    S = as_backend(S)
+
+    R00, _ = ricci_tensor(S, dx=dx, kappa=kappa, gamma=gamma)
+    return g + dt * (R00 - damping * g)
