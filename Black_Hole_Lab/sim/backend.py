@@ -1,35 +1,37 @@
-# sim/backend.py
-
+import numpy as np
 try:
-    import cupy as _cp
+    import cupy as cp
+    CUPY_AVAILABLE = True
 except ImportError:
-    _cp = None
-import numpy as _np
+    CUPY_AVAILABLE = False
 
-# pick our “xp” namespace
-xp = _cp if _cp is not None else _np
+class Backend:
+    def __init__(self, use_gpu=False):
+        self.use_gpu = use_gpu and CUPY_AVAILABLE
+        self.xp = cp if self.use_gpu else np
 
-# expose ndarray type and common routines
-ndarray = xp.ndarray
-ones     = xp.ones
-zeros    = xp.zeros
-clip     = xp.clip
-log      = xp.log
-sum      = xp.sum
-random   = xp.random
+    def array(self, data):
+        return self.xp.array(data)
 
-def as_backend(arr):
-    """
-    Convert any array-like to an xp.ndarray.
-    """
-    if isinstance(arr, xp.ndarray):
-        return arr
-    return xp.array(arr)
+    def zeros(self, shape, dtype=float):
+        return self.xp.zeros(shape, dtype=dtype)
 
-def asnumpy(arr):
-    """
-    Bring a GPU array back to CPU, or return NumPy array as-is.
-    """
-    if _cp is not None and isinstance(arr, _cp.ndarray):
-        return _cp.asnumpy(arr)
-    return arr
+    def exp(self, x):
+        return self.xp.exp(x)
+
+    def meshgrid(self, x, y):
+        return self.xp.meshgrid(x, y)
+
+    def sqrt(self, x):
+        return self.xp.sqrt(x)
+
+    def sum(self, x, axis=None):
+        return self.xp.sum(x, axis=axis)
+
+    def to_numpy(self, x):
+        if self.use_gpu:
+            return cp.asnumpy(x)
+        return x
+
+    def norm(self, x, axis=None):
+        return self.xp.linalg.norm(x, axis=axis)
