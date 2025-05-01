@@ -1,55 +1,36 @@
 """
-Backend utilities: transparently handle NumPy (CPU) vs CuPy (GPU).
-
-If CuPy is importable **and** a CUDA device exists, we treat CuPy as the
-“native” array type; otherwise we fall back to NumPy everywhere.
-
-Code elsewhere should:
-    from .backend import xp, as_backend
-and then work with ``xp.ndarray`` just like NumPy.
+Unified numeric backend (NumPy or CuPy), *and* a NumPy‐like module
+so that `import sim.backend as np` just works in your tests.
 """
-from __future__ import annotations
 
-import os
-import numpy as _np
-
+# Attempt to use CuPy if available, otherwise fall back to NumPy
 try:
     import cupy as _cp
-    _GPU_OK = _cp.is_available()
-except ImportError:     # CuPy not installed → CPU only
-    _cp = None
-    _GPU_OK = False
+    xp = _cp
+except ImportError:
+    xp = None
 
-# --- public aliases ----------------------------------------------------------
-xp = _cp if _GPU_OK else _np            # “numpy-like” backend
+# Always import real NumPy under the hood
+import numpy as _np
+
+# Re-export *all* of NumPy’s public API at the top level of this module.
+# That way: `import sim.backend as np` gives you everything you expect.
+for _name in dir(_np):
+    if not _name.startswith("_"):
+        globals()[_name] = getattr(_np, _name)
+
+# Finalize xp so that it’s either CuPy or NumPy
+if xp is None:
+    xp = _np
+
+# Make sure np.ndarray refers to the real NumPy array type
+ndarray = _np.ndarray
 
 def as_backend(arr):
     """
-    Convert *arr* to the currently-selected backend (NumPy or CuPy).
-
-    • If arr is already an xp.ndarray, it is returned unchanged.  
-    • Scalars / lists become 0-D / 1-D xp arrays.
+    Convert a NumPy ndarray into the current xp backend, or leave xp ndarrays alone.
     """
-    if _GPU_OK and isinstance(arr, _np.ndarray):
-        return _cp.asarray(arr)
-    if (not _GPU_OK) and _cp is not None and isinstance(arr, _cp.ndarray):
-        return _np.asarray(arr)
-    if _GPU_OK and not isinstance(arr, _cp.ndarray):
-        return _cp.asarray(arr)
-    if (not _GPU_OK) and not isinstance(arr, _np.ndarray):
-        return _np.asarray(arr)
-    return arr  # already correct type
-
-def backend_name() -> str:          # convenience for logging
-    return "cupy/GPU" if _GPU_OK else "numpy/CPU"
-
-# ------------------------------------------------------------------
-# Compatibility shim for old test-suite: it expects
-#     import sim.backend as np
-# and then accesses `np.ndarray`.
-# We simply alias our backend array type to that name.
-try:
-    ndarray = xp.ndarray          # e.g. numpy.ndarray  OR  cupy.ndarray
-except AttributeError:
-    pass
-    
+    if isinstance(arr, xp.ndarray):
+        return arr
+    # xp.asarray works for both NumPy and CuPy
+    return xp.asarray(arr)
