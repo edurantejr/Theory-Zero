@@ -84,7 +84,8 @@ def main() -> None:
 
         # 2. Numba integrator needs **NumPy** arrays
         if xp is not np:                         # CuPy in use
-            particles_np = xp.asnumpy(particles)
+            from .backend import asnumpy
+            particles_np = asnumpy(particles)
             g00_np       = xp.asnumpy(g)
             S_np        = xp.asnumpy(S_lattice)
         else:
