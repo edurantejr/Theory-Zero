@@ -15,6 +15,24 @@ import importlib
 import os
 import sys
 
+# --- add at top, after existing imports -------------------------------------
+try:
+    import cupy as cp
+except ImportError:
+    cp = None             # CPU-only fallback
+
+import numpy as np
+
+def as_backend(a):
+    """
+    Return `a` as a CuPy array if CuPy is available *and* the runtime has a
+    GPU; otherwise return a NumPy array.  Safe to pass either kind in – this
+    is a no-op for matching types.
+    """
+    if cp is not None and cp.is_available():
+        return cp.asarray(a)
+    return np.asarray(a)
+
 _use_gpu = "--gpu" in sys.argv
 if _use_gpu:
     sys.argv.remove("--gpu")
