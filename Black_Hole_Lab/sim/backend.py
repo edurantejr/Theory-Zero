@@ -1,51 +1,44 @@
 """
-Backend selector: NumPy by default, CuPy when --gpu is on **and** cupy is
-installed with a compatible CUDA runtime.
+Backend utilities: transparently handle NumPy (CPU) vs CuPy (GPU).
 
-Usage in your code:
-    import sim.backend as xp
-    a = xp.zeros((100,100))
-    b = xp.exp(a) + 1
+If CuPy is importable **and** a CUDA device exists, we treat CuPy as the
+“native” array type; otherwise we fall back to NumPy everywhere.
 
-Running:
-    python -m sim.run_phase3 ...               # CPU / NumPy
-    python -m sim.run_phase3 --gpu ...         # GPU / CuPy (if available)
+Code elsewhere should:
+    from .backend import xp, as_backend
+and then work with ``xp.ndarray`` just like NumPy.
 """
-import importlib
+from __future__ import annotations
+
 import os
-import sys
+import numpy as _np
 
-# --- add at top, after existing imports -------------------------------------
 try:
-    import cupy as cp
-except ImportError:
-    cp = None             # CPU-only fallback
+    import cupy as _cp
+    _GPU_OK = _cp.is_available()
+except ImportError:     # CuPy not installed → CPU only
+    _cp = None
+    _GPU_OK = False
 
-import numpy as np
+# --- public aliases ----------------------------------------------------------
+xp = _cp if _GPU_OK else _np            # “numpy-like” backend
 
-def as_backend(a):
+def as_backend(arr):
     """
-    Return `a` as a CuPy array if CuPy is available *and* the runtime has a
-    GPU; otherwise return a NumPy array.  Safe to pass either kind in – this
-    is a no-op for matching types.
+    Convert *arr* to the currently-selected backend (NumPy or CuPy).
+
+    • If arr is already an xp.ndarray, it is returned unchanged.  
+    • Scalars / lists become 0-D / 1-D xp arrays.
     """
-    if cp is not None and cp.is_available():
-        return cp.asarray(a)
-    return np.asarray(a)
+    if _GPU_OK and isinstance(arr, _np.ndarray):
+        return _cp.asarray(arr)
+    if (not _GPU_OK) and _cp is not None and isinstance(arr, _cp.ndarray):
+        return _np.asarray(arr)
+    if _GPU_OK and not isinstance(arr, _cp.ndarray):
+        return _cp.asarray(arr)
+    if (not _GPU_OK) and not isinstance(arr, _np.ndarray):
+        return _np.asarray(arr)
+    return arr  # already correct type
 
-_use_gpu = "--gpu" in sys.argv
-if _use_gpu:
-    sys.argv.remove("--gpu")
-
-if _use_gpu:
-    try:
-        xp = importlib.import_module("cupy")   # GPU!
-    except ModuleNotFoundError:
-        print("⚠️  CuPy not installed – falling back to NumPy")
-        xp = importlib.import_module("numpy")
-else:
-    xp = importlib.import_module("numpy")
-
-# re-export the backend as this module’s public API
-globals().update(xp.__dict__)
-__all__ = xp.__dict__.keys()
+def backend_name() -> str:          # convenience for logging
+    return "cupy/GPU" if _GPU_OK else "numpy/CPU"
