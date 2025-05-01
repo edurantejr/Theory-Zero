@@ -1,36 +1,28 @@
-"""
-Unified numeric backend (NumPy or CuPy), *and* a NumPy‐like module
-so that `import sim.backend as np` just works in your tests.
-"""
+# sim/backend.py
 
-# Attempt to use CuPy if available, otherwise fall back to NumPy
+import numpy as _np
 try:
     import cupy as _cp
-    xp = _cp
 except ImportError:
-    xp = None
+    _cp = None
 
-# Always import real NumPy under the hood
-import numpy as _np
+# Choose our array library
+xp = _cp if _cp is not None else _np
 
-# Re-export *all* of NumPy’s public API at the top level of this module.
-# That way: `import sim.backend as np` gives you everything you expect.
-for _name in dir(_np):
-    if not _name.startswith("_"):
-        globals()[_name] = getattr(_np, _name)
-
-# Finalize xp so that it’s either CuPy or NumPy
-if xp is None:
-    xp = _np
-
-# Make sure np.ndarray refers to the real NumPy array type
-ndarray = _np.ndarray
-
-def as_backend(arr):
+def as_backend(x):
     """
-    Convert a NumPy ndarray into the current xp backend, or leave xp ndarrays alone.
+    Convert a NumPy array to CuPy if xp is CuPy,
+    or a CuPy array to NumPy if xp is NumPy.
+    Leave everything else alone.
     """
-    if isinstance(arr, xp.ndarray):
-        return arr
-    # xp.asarray works for both NumPy and CuPy
-    return xp.asarray(arr)
+    if xp is _cp and isinstance(x, _np.ndarray):
+        return _cp.asarray(x)
+    if xp is _np and hasattr(x, "__cuda_array_interface__"):
+        return _np.asarray(x)
+    return x
+
+def asnumpy(x):
+    """Always return a NumPy ndarray."""
+    if xp is _cp:
+        return _cp.asnumpy(x)
+    return x
