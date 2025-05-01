@@ -6,23 +6,32 @@ try:
 except ImportError:
     _cp = None
 
-# Choose our array library
+# pick our array library
 xp = _cp if _cp is not None else _np
+
+# “fake” numpy API so downstream code/tests that do
+#   import sim.backend as np
+# will see np.ndarray, np.ones, np.clip, etc.
+ndarray = xp.ndarray
+ones    = xp.ones
+zeros   = xp.zeros
+clip    = xp.clip
+log     = xp.log
+sum     = xp.sum
 
 def as_backend(x):
     """
-    Convert a NumPy array to CuPy if xp is CuPy,
-    or a CuPy array to NumPy if xp is NumPy.
-    Leave everything else alone.
+    Convert any array‐like into an xp.ndarray.
     """
-    if xp is _cp and isinstance(x, _np.ndarray):
-        return _cp.asarray(x)
-    if xp is _np and hasattr(x, "__cuda_array_interface__"):
-        return _np.asarray(x)
-    return x
+    if isinstance(x, xp.ndarray):
+        return x
+    return xp.array(x)
 
 def asnumpy(x):
-    """Always return a NumPy ndarray."""
-    if xp is _cp:
-        return _cp.asnumpy(x)
+    """
+    Bring a GPU (cupy) array back to a NumPy ndarray,
+    or just return a NumPy array untouched.
+    """
+    if xp is not _np:
+        return xp.asnumpy(x)
     return x
