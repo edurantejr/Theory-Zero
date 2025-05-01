@@ -42,3 +42,14 @@ def as_backend(arr):
 
 def backend_name() -> str:          # convenience for logging
     return "cupy/GPU" if _GPU_OK else "numpy/CPU"
+
+# ------------------------------------------------------------------
+# Compatibility shim for old test-suite: it expects
+#     import sim.backend as np
+# and then accesses `np.ndarray`.
+# We simply alias our backend array type to that name.
+try:
+    ndarray = xp.ndarray          # e.g. numpy.ndarray  OR  cupy.ndarray
+except AttributeError:
+    pass
+    
