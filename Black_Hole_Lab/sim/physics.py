@@ -1,77 +1,48 @@
-# sim/physics.py
+import numpy as np
+from backend import Backend
 
-from __future__ import annotations
-from .backend import xp, as_backend
+class Physics:
+    def __init__(self, backend: Backend, sigma=0.1, kappa=-0.01):
+        self.backend = backend
+        self.xp = backend.xp
+        self.sigma = sigma
+        self.kappa = kappa
+        self.center = self.xp.array([0.5, 0.5])
 
-def ricci_tensor(
-    S:  xp.ndarray | object,
-    *,
-    dx: float = 1.0,
-    h:  float | None = None,
-    kappa: float = -0.138475,
-    gamma: float = -1.0,
-):
-    """
-    Compute (R00, Rii) on the interior grid.
-    Accepts keyword `h=` for legacy tests.
-    """
-    if h is not None:
-        dx = h
+    def entropy_field(self, positions):
+        dx = positions[..., 0] - self.center[0]
+        dy = positions[..., 1] - self.center[1]
+        r2 = dx**2 + dy**2
+        S = self.xp.exp(-r2 / (2 * self.sigma**2))
+        return S
 
-    S = as_backend(S)
-    inv_dx2 = 1.0 / dx**2
+    def entropy_gradient(self, positions):
+        S = self.entropy_field(positions)
+        dx = positions[..., 0] - self.center[0]
+        dy = positions[..., 1] - self.center[1]
+        factor = -S / (self.sigma**2)
+        grad = self.xp.stack([factor * dx, factor * dy], axis=-1)
+        return grad
 
-    # 6-point Laplacian
-    lap = (
-        S[:-2,1:-1,1:-1] + S[2:,1:-1,1:-1] +
-        S[1:-1,:-2,1:-1] + S[1:-1,2:,1:-1] +
-        S[1:-1,1:-1,:-2] + S[1:-1,1:-1,2:]
-        - 6.0 * S[1:-1,1:-1,1:-1]
-    ) * inv_dx2
+    def curvature_scalar(self, positions):
+        h = 0.01
+        pos_shape = positions.shape[:-1]
+        pos = positions.reshape(-1, 2)
+        S = self.entropy_field(pos).reshape(pos_shape)
 
-    dxx = (S[2:,1:-1,1:-1] - 2*S[1:-1,1:-1,1:-1] + S[:-2,1:-1,1:-1]) * inv_dx2
-    dyy = (S[1:-1,2:,1:-1] - 2*S[1:-1,1:-1,1:-1] + S[1:-1,:-2,1:-1]) * inv_dx2
-    dzz = (S[1:-1,1:-1,2:] - 2*S[1:-1,1:-1,1:-1] + S[1:-1,1:-1,:-2]) * inv_dx2
+        # Finite differences
+        pos_dx = pos + self.xp.array([h, 0])
+        pos_dx_neg = pos - self.xp.array([h, 0])
+        pos_dy = pos + self.xp.array([0, h])
+        pos_dy_neg = pos - self.xp.array([0, h])
 
-    R00 = kappa * (dxx + dyy + dzz + gamma * lap)
-    Rii = kappa * ((gamma - 1.0) * xp.stack([dxx, dyy, dzz])).sum(axis=0)
-    return R00, Rii
+        S_dx = self.entropy_field(pos_dx).reshape(pos_shape)
+        S_dx_neg = self.entropy_field(pos_dx_neg).reshape(pos_shape)
+        S_dy = self.entropy_field(pos_dy).reshape(pos_shape)
+        S_dy_neg = self.entropy_field(pos_dy_neg).reshape(pos_shape)
 
+        S_dx2 = (S_dx - 2 * S + S_dx_neg) / h**2
+        S_dy2 = (S_dy - 2 * S + S_dy_neg) / h**2
 
-def force_phase3(
-    g00: xp.ndarray,
-    dx: float
-) -> tuple[xp.ndarray, xp.ndarray, xp.ndarray]:
-    """
-    Compute ∂R00/∂x,∂R00/∂y,∂R00/∂z on the interior grid.
-    """
-    g = as_backend(g00)
-    Fx = xp.zeros_like(g)
-    Fy = Fx.copy()
-    Fz = Fx.copy()
-
-    inv_2dx = 1.0 / (2.0 * dx)
-    Fx[1:-1,:,:] = (g[2:,:,:] - g[:-2,:,:]) * inv_2dx
-    Fy[:,1:-1,:] = (g[:,2:,:] - g[:,:-2,:]) * inv_2dx
-    Fz[:,:,1:-1] = (g[:,:,2:] - g[:,:,:-2]) * inv_2dx
-
-    return Fx, Fy, Fz
-
-
-def evolve_metric(
-    g00: xp.ndarray,
-    S:    xp.ndarray,
-    dt:   float,
-    dx:   float,
-    kappa: float = -0.138475,
-    gamma: float = -1.0,
-    damping: float = 0.1,
-) -> xp.ndarray:
-    """
-    Explicit Euler update of g00:
-
-      gⁿ⁺¹ = gⁿ + dt * [ R00(S) - damping * gⁿ ]
-    """
-    g = as_backend(g00)
-    R00, _ = ricci_tensor(S, dx=dx, kappa=kappa, gamma=gamma)
-    return g + dt * (R00 - damping * g)
+        laplacian = S_dx2 + S_dy2
+        return self.kappa * laplacian
