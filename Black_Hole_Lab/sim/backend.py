@@ -1,37 +1,35 @@
 # sim/backend.py
 
-import numpy as _np
 try:
     import cupy as _cp
 except ImportError:
     _cp = None
+import numpy as _np
 
-# pick our array library
+# pick our “xp” namespace
 xp = _cp if _cp is not None else _np
 
-# “fake” numpy API so downstream code/tests that do
-#   import sim.backend as np
-# will see np.ndarray, np.ones, np.clip, etc.
+# expose ndarray type and common routines
 ndarray = xp.ndarray
-ones    = xp.ones
-zeros   = xp.zeros
-clip    = xp.clip
-log     = xp.log
-sum     = xp.sum
+ones     = xp.ones
+zeros    = xp.zeros
+clip     = xp.clip
+log      = xp.log
+sum      = xp.sum
+random   = xp.random
 
-def as_backend(x):
+def as_backend(arr):
     """
-    Convert any array‐like into an xp.ndarray.
+    Convert any array-like to an xp.ndarray.
     """
-    if isinstance(x, xp.ndarray):
-        return x
-    return xp.array(x)
+    if isinstance(arr, xp.ndarray):
+        return arr
+    return xp.array(arr)
 
-def asnumpy(x):
+def asnumpy(arr):
     """
-    Bring a GPU (cupy) array back to a NumPy ndarray,
-    or just return a NumPy array untouched.
+    Bring a GPU array back to CPU, or return NumPy array as-is.
     """
-    if xp is not _np:
-        return xp.asnumpy(x)
-    return x
+    if _cp is not None and isinstance(arr, _cp.ndarray):
+        return _cp.asnumpy(arr)
+    return arr
