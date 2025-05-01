@@ -1,65 +1,56 @@
 # sim/integrators.py
-from __future__ import annotations
 
-import numpy as _np
-from .backend import xp
-from .physics import evolve_metric, force_phase3
+"""
+Phase-3 integrators: evolve the metric and move particles under ∂R00/∂x.
+"""
 
-def step(
-    state: dict[str, _np.ndarray | xp.ndarray],
-    particles: _np.ndarray,
-    dt: float,
-    dx: float,
-) -> None:
+from .physics import force_phase3, evolve_metric
+from .backend import xp, as_backend
+
+def step(state: dict[str, xp.ndarray],
+         particles: xp.ndarray,
+         dt: float,
+         dx: float) -> xp.ndarray:
     """
-    Evolve one timestep of metric and particles in place.
-    state must have keys "S" (entropy field) and "g" (current g00 lattice).
-    particles is an N×6 array: [x, y, z, vx, vy, vz].
+    1) Advance the metric g₀₀ via explicit Euler:
+         g → g + dt * (R00(S) - damping*g)
+    2) Compute ∂R00/∂x = (Fx, Fy, Fz)
+    3) At each particle’s lattice index, lookup the force and
+       update velocity and position.
+
+    Args:
+        state:  {"S": entropy_field (L³), "g": g00_field (L-2)³}
+        particles:  (N,6) array [[x,y,z,vx,vy,vz], …] in lattice units
+        dt:      time step
+        dx:      lattice spacing
+
+    Returns:
+        updated particles array of shape (N,6)
     """
-    # 1) update the metric
-    state["g"] = evolve_metric(state["g"], state["S"], dt, dx)
+    # 1) evolve the metric in state
+    g_new = evolve_metric(state["g"], state["S"], dt, dx)
+    state["g"] = g_new
 
-    # 2) push the particles
-    kick_particles(particles, state["g"], dt, dx)
+    # 2) make sure our particle array is on the right backend
+    #    (NumPy on CPU or CuPy on GPU)
+    particles = as_backend(particles)
 
+    # 3) compute the force field
+    Fx, Fy, Fz = force_phase3(g_new, dx)
 
-def kick_particles(
-    particles: _np.ndarray,
-    g00: xp.ndarray,
-    dt: float,
-    dx: float,
-) -> None:
-    """
-    Update velocities & positions of each particle in place,
-    using the local ∇R00 force lookup at the nearest grid‐index.
-    """
-    # compute ∂R00/∂x on the lattice
-    Fx, Fy, Fz = force_phase3(g00, dx)
+    # 4) compute integer lattice indices for each particle
+    #    clamp into [1, L-3] so we never index the boundary
+    idx = (particles[:, :3] / dx).astype(int)
+    i = xp.clip(idx[:, 0], 1, g_new.shape[0] - 2)
+    j = xp.clip(idx[:, 1], 1, g_new.shape[1] - 2)
+    k = xp.clip(idx[:, 2], 1, g_new.shape[2] - 2)
 
-    # lattice shape & world‐to‐grid converter
-    Lx, Ly, Lz = g00.shape
-    halfx = Lx // 2
-    halfy = Ly // 2
-    halfz = Lz // 2
+    # 5) update velocities: v += F * dt
+    particles[:, 3] += Fx[i, j, k] * dt
+    particles[:, 4] += Fy[i, j, k] * dt
+    particles[:, 5] += Fz[i, j, k] * dt
 
-    for n in range(particles.shape[0]):
-        x, y, z, vx, vy, vz = particles[n]
+    # 6) update positions: x += v * dt
+    particles[:, :3] += particles[:, 3:6] * dt
 
-        # map world coords → interior grid indices [1 .. L-2]
-        i = int(_np.clip(round(x/dx) + halfx, 1, Lx-2))
-        j = int(_np.clip(round(y/dx) + halfy, 1, Ly-2))
-        k = int(_np.clip(round(z/dx) + halfz, 1, Lz-2))
-
-        # update velocity by local force
-        vx += Fx[i, j, k] * dt
-        vy += Fy[i, j, k] * dt
-        vz += Fz[i, j, k] * dt
-
-        # simple Euler step for position
-        x += vx * dt
-        y += vy * dt
-        z += vz * dt
-
-        # write back
-        particles[n, 0:3] = (x, y, z)
-        particles[n, 3:6] = (vx, vy, vz)
+    return particles
