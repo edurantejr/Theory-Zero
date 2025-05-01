@@ -1,70 +1,43 @@
 # sim/run_phase3.py
 
 import argparse
-from . import backend
+import numpy as _np
 from .backend import xp, as_backend, asnumpy
 from .integrators import step
 
 def main():
-    p = argparse.ArgumentParser(
-        description="Phase-3 Emergent Gravity Simulation"
-    )
-    p.add_argument(
-        "--gpu", action="store_true",
-        help="use the CuPy backend if available"
-    )
-    p.add_argument(
-        "--nodes", type=int, default=100,
-        help="number of grid points per side (N³ lattice)"
-    )
-    p.add_argument(
-        "--frames", type=int, default=100,
-        help="number of timesteps to simulate"
-    )
-    p.add_argument(
-        "--dt", type=float, default=0.1,
-        help="time step Δt"
-    )
-    p.add_argument(
-        "--dx", type=float, default=1.0,
-        help="spatial grid spacing Δx"
-    )
+    p = argparse.ArgumentParser(prog="Phase-3 sim")
+    p.add_argument("--gpu",    action="store_true", help="use Cupy if available")
+    p.add_argument("--nodes",  type=int,   default=1000)
+    p.add_argument("--frames", type=int,   default=250)
+    p.add_argument("--dt",     type=float, default=0.05)
+    p.add_argument("--dx",     type=float, default=1.0)
     args = p.parse_args()
 
-    # ——— pick backend ———
-    if args.gpu:
-        if backend._cp is None:
-            print("⚠️  cupy not installed, falling back to NumPy")
-        else:
-            backend.xp = backend._cp
+    # build S & g on xp
+    S = as_backend(
+        xp.random.random(
+            (args.nodes, args.nodes, args.nodes),
+            dtype = xp.float32
+        )
+    )
+    g = xp.zeros((args.nodes - 2,)*3, dtype=xp.float32)
 
-    # ——— allocate fields ———
-    N = args.nodes
-    # entanglement-entropy field on an N×N×N grid
-    S = xp.random.rand(N, N, N).astype(xp.float32)
-    S = as_backend(S)
+    # initialise M = nodes test particles
+    particles = xp.zeros((args.nodes, 6), dtype=xp.float32)
+    # example: line of particles along x, centered
+    particles[:,0] = xp.linspace(-args.nodes/2, args.nodes/2, args.nodes)
 
-    # metric g00 lives on the interior (N-2)³
-    g = xp.zeros((N-2, N-2, N-2), dtype=xp.float32)
+    state = {"S": S, "g": g}
 
-    # ——— setup particle array ———
-    # each particle: [x, y, z, vx, vy, vz]
-    particles = xp.zeros((N, 6), dtype=xp.float32)
-    # e.g. initialize one test particle at (−N/2,0,0) with vx=+0.5
-    particles[0, 0:3] = xp.array([-N/2, 0.0, 0.0], dtype=xp.float32)
-    particles[0, 3]   = 0.5
+    # run
+    for _ in range(args.frames):
+        particles = step(state, particles, args.dt, args.dx)
 
-    # ——— time-march ———
-    for frame in range(args.frames):
-        # step updates particles in-place
-        step({"S": S, "g": g}, particles, args.dt, args.dx)
-
-    # ——— save final trajectories ———
-    # bring back to NumPy
+    # save final trajectory
     traj = asnumpy(particles)
-    # and save with either xp (np or cp)
-    xp.savez("phase3_traj.npz", traj=traj)
-    print(f"✔️  Done: saved phase3_traj.npz with shape {traj.shape}")
+    _np.savez("phase3_traj.npz", traj=traj)
+    print("Done → phase3_traj.npz")
 
 if __name__ == "__main__":
     main()
