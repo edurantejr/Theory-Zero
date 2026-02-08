@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Environments
+.venv/
+.venv*/
+.env
+
+# Data and runs
+runs/
+data/raw/
+data/processed/
+
+# Artifacts
+*.log
+*.sqlite-wal
+*.sqlite-shm
+
+# Notebooks
+.ipynb_checkpoints/
+
+# OS
+.DS_Store

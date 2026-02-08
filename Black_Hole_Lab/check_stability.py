@@ -1,11 +1,15 @@
-import numpy as np
-from sim.physics import evolve_metric
+"""Deprecated wrapper for legacy script."""
 
-dx = 1.0
-dt = 0.1
-S  = np.random.rand(10,10,10).astype(np.float32)
-g  = np.zeros((8,8,8), np.float32)
+from __future__ import annotations
 
-g1 = evolve_metric(g, S, dt, dx, kappa=-100.0)
+import runpy
+import warnings
+from pathlib import Path
 
-print("max |g00| after update:", np.abs(g1).max())
+warnings.warn(
+    "check_stability.py is deprecated. Use tz.core.checks instead.",
+    DeprecationWarning,
+)
+
+legacy_path = Path(__file__).resolve().parent / "legacy" / "check_stability.py"
+runpy.run_path(str(legacy_path), run_name="__main__")
