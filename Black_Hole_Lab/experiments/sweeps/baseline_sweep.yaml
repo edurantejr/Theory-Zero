@@ -1,0 +1,4 @@
+name: baseline_sweep
+parameters:
+  integrator.dt: [0.01, 0.005]
+  model.omega: [0.5, 1.0]
