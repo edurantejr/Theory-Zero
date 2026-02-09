@@ -51,7 +51,7 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 addopts = "-ra"
-norecursedirs = ["legacy"]
+norecursedirs = ["legacy", ".hypothesis"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
